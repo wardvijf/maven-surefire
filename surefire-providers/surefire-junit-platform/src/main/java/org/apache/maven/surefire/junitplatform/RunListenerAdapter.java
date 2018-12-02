@@ -23,6 +23,9 @@ import static org.apache.maven.surefire.report.SimpleReportEntry.ignored;
 import static org.junit.platform.engine.TestExecutionResult.Status.ABORTED;
 import static org.junit.platform.engine.TestExecutionResult.Status.FAILED;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -33,6 +36,7 @@ import org.apache.maven.surefire.report.SimpleReportEntry;
 import org.apache.maven.surefire.report.StackTraceWriter;
 import org.junit.platform.engine.TestExecutionResult;
 import org.junit.platform.engine.TestSource;
+import org.junit.platform.engine.reporting.ReportEntry;
 import org.junit.platform.engine.support.descriptor.ClassSource;
 import org.junit.platform.engine.support.descriptor.MethodSource;
 import org.junit.platform.launcher.TestExecutionListener;
@@ -52,6 +56,8 @@ final class RunListenerAdapter
     private TestPlan testPlan;
 
     private Set<TestIdentifier> testSetNodes = ConcurrentHashMap.newKeySet();
+
+    private Map<TestIdentifier, List<ReportEntry>> reportEntries = new ConcurrentHashMap<>();
 
     RunListenerAdapter( RunListener runListener )
     {
@@ -113,10 +119,18 @@ final class RunListenerAdapter
         completeTestSetIfNecessary( testIdentifier );
     }
 
+    @Override
+    public void reportingEntryPublished( TestIdentifier testIdentifier, ReportEntry entry )
+    {
+        List<ReportEntry> entries = reportEntries.computeIfAbsent( testIdentifier, key -> new ArrayList<>() );
+        entries.add( entry );
+    }
+
     private void updateTestPlan( TestPlan testPlan )
     {
         this.testPlan = testPlan;
         testSetNodes.clear();
+        reportEntries.clear();
     }
 
     private void ensureTestSetStarted( TestIdentifier testIdentifier )
@@ -167,6 +181,7 @@ final class RunListenerAdapter
     {
         runListener.testSetCompleted( createTestSetReportEntry( testIdentifier ) );
         testSetNodes.remove( testIdentifier );
+        reportEntries.remove( testIdentifier );
     }
 
     private void reportFailedTest(
@@ -185,8 +200,15 @@ final class RunListenerAdapter
 
     private SimpleReportEntry createTestSetReportEntry( TestIdentifier testIdentifier )
     {
-        return new SimpleReportEntry(
-                        JUnitPlatformProvider.class.getName(), testIdentifier.getLegacyReportingName() );
+        String source = JUnitPlatformProvider.class.getName();
+        String name = testIdentifier.getLegacyReportingName();
+        List<ReportEntry> entries = reportEntries.get( testIdentifier );
+        if (entries != null)
+        {
+            String message = "TODO Unroll " + entries.size() + " report(s).";
+            return new SimpleReportEntry( source, name , message );
+        }
+        return new SimpleReportEntry( source, name );
     }
 
     private SimpleReportEntry createReportEntry( TestIdentifier testIdentifier )
