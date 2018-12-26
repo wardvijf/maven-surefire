@@ -267,11 +267,10 @@ public class AbstractSurefireMojoTest
         when( mojo.getConsoleLogger() ).thenReturn( new PluginConsoleLogger( logger ) );
 
         StartupConfiguration conf = invokeMethod( mojo, "newStartupConfigWithClasspath",
-                classLoaderConfiguration, providerArtifacts, "org.asf.Provider" );
+                classLoaderConfiguration, providerArtifacts, "org.asf.Provider", testClasspath );
 
         verify( mojo, times( 1 ) ).effectiveIsEnableAssertions();
         verify( mojo, times( 1 ) ).isChildDelegation();
-        verifyPrivate( mojo, times( 1 ) ).invoke( "generateTestClasspath" );
         verify( mojo, times( 1 ) ).getEffectiveForkCount();
         ArgumentCaptor<String> argument = ArgumentCaptor.forClass( String.class );
         verify( logger, times( 6 ) ).debug( argument.capture() );

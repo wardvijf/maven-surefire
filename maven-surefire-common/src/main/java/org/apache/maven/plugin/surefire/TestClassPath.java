@@ -26,7 +26,9 @@ import org.apache.maven.surefire.booter.Classpath;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static java.util.Collections.addAll;
@@ -53,12 +55,21 @@ final class TestClassPath
         this.logger = logger;
     }
 
+    Map<String, Artifact> getTestDependencies()
+    {
+        Map<String, Artifact> artifactMapping = new LinkedHashMap<>();
+        for ( Artifact artifact : artifacts )
+        {
+            artifactMapping.put( artifact.getGroupId() + ":" + artifact.getArtifactId(), artifact );
+        }
+        return artifactMapping;
+    }
+
     void avoidArtifactDuplicates( Set<Artifact> providerArtifacts )
     {
         for ( Artifact artifact : artifacts )
         {
-            Iterator<Artifact> it = providerArtifacts.iterator();
-            while ( it.hasNext() )
+            for ( Iterator<Artifact> it = providerArtifacts.iterator(); it.hasNext(); )
             {
                 Artifact providerArtifact = it.next();
                 String classifier1 = providerArtifact.getClassifier();

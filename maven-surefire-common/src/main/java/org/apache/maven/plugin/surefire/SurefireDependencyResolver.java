@@ -20,6 +20,7 @@ package org.apache.maven.plugin.surefire;
  */
 
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -158,6 +159,18 @@ final class SurefireDependencyResolver
         }
 
         return orderProviderArtifacts( result.getArtifacts() );
+    }
+
+    @Nonnull
+    Map<String, Artifact> getProviderClasspathAsMap( String providerArtifactId, String providerVersion )
+    {
+        Map<String, Artifact> cpArtifactsMapping = new LinkedHashMap<>();
+        for ( Artifact cpArtifact : getProviderClasspath( providerArtifactId, providerVersion ) )
+        {
+            String key = cpArtifact.getGroupId() + ":" + cpArtifact.getArtifactId();
+            cpArtifactsMapping.put( key, cpArtifact );
+        }
+        return cpArtifactsMapping;
     }
 
     Set<Artifact> addProviderToClasspath( Map<String, Artifact> pluginArtifactMap, Artifact mojoPluginArtifact,
