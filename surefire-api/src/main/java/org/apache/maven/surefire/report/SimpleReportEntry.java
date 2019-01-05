@@ -167,6 +167,12 @@ public class SimpleReportEntry
     }
 
     @Override
+    public int getElapsed( int fallback )
+    {
+        return elapsed == null ? fallback : elapsed;
+    }
+
+    @Override
     public String toString()
     {
         return "ReportEntry{" + "source='" + source + '\'' + ", name='" + name + '\'' + ", stackTraceWriter="

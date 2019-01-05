@@ -20,17 +20,15 @@ package org.apache.maven.surefire.junitplatform;
  */
 
 import static org.apache.maven.surefire.report.SimpleReportEntry.ignored;
-import static org.junit.platform.engine.TestExecutionResult.Status.ABORTED;
-import static org.junit.platform.engine.TestExecutionResult.Status.FAILED;
+import static org.apache.maven.surefire.report.SimpleReportEntry.withException;
 
 import java.util.Optional;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.maven.surefire.report.PojoStackTraceWriter;
 import org.apache.maven.surefire.report.RunListener;
 import org.apache.maven.surefire.report.SimpleReportEntry;
 import org.apache.maven.surefire.report.StackTraceWriter;
+import org.apache.maven.surefire.report.TestSetReportEntry;
 import org.junit.platform.engine.TestExecutionResult;
 import org.junit.platform.engine.TestSource;
 import org.junit.platform.engine.support.descriptor.ClassSource;
@@ -38,7 +36,6 @@ import org.junit.platform.engine.support.descriptor.MethodSource;
 import org.junit.platform.launcher.TestExecutionListener;
 import org.junit.platform.launcher.TestIdentifier;
 import org.junit.platform.launcher.TestPlan;
-import org.junit.platform.launcher.listeners.LegacyReportingUtils;
 
 /**
  * @since 2.22.0
@@ -46,12 +43,9 @@ import org.junit.platform.launcher.listeners.LegacyReportingUtils;
 final class RunListenerAdapter
     implements TestExecutionListener
 {
-
     private final RunListener runListener;
 
-    private TestPlan testPlan;
-
-    private Set<TestIdentifier> testSetNodes = ConcurrentHashMap.newKeySet();
+    private volatile TestPlan testPlan;
 
     RunListenerAdapter( RunListener runListener )
     {
@@ -61,13 +55,13 @@ final class RunListenerAdapter
     @Override
     public void testPlanExecutionStarted( TestPlan testPlan )
     {
-        updateTestPlan( testPlan );
+        this.testPlan = testPlan;
     }
 
     @Override
     public void testPlanExecutionFinished( TestPlan testPlan )
     {
-        updateTestPlan( null );
+        this.testPlan = null;
     }
 
     @Override
@@ -76,117 +70,82 @@ final class RunListenerAdapter
         if ( testIdentifier.isContainer()
                         && testIdentifier.getSource().filter( ClassSource.class::isInstance ).isPresent() )
         {
-            startTestSetIfPossible( testIdentifier );
+            runListener.testSetStarting( createTestSetReportEntry( testIdentifier ) );
         }
-        if ( testIdentifier.isTest() )
+        else if ( testIdentifier.isTest() )
         {
-            ensureTestSetStarted( testIdentifier );
             runListener.testStarting( createReportEntry( testIdentifier ) );
+        }
+    }
+
+    @Override
+    public void executionFinished( TestIdentifier testIdentifier, TestExecutionResult testExecutionResult )
+    {
+        boolean isClass = testIdentifier.isContainer()
+                && testIdentifier.getSource().filter( ClassSource.class::isInstance ).isPresent();
+
+        boolean isTest = testIdentifier.isTest();
+
+        if ( isClass || isTest )
+        {
+            switch ( testExecutionResult.getStatus() )
+            {
+                case ABORTED:
+                    TestSetReportEntry reportEntry = createReportEntry( testIdentifier, testExecutionResult );
+                    if ( isTest )
+                    {
+                        runListener.testAssumptionFailure( reportEntry );
+                    }
+                    else
+                    {
+                        runListener.testSetCompleted( reportEntry );
+                    }
+                    break;
+                case FAILED:
+                    reportEntry = createReportEntry( testIdentifier, testExecutionResult );
+                    if ( !isTest )
+                    {
+                        runListener.testSetCompleted( reportEntry );
+                    }
+                    else if ( testExecutionResult.getThrowable()
+                            .filter( AssertionError.class::isInstance ).isPresent() )
+                    {
+                        runListener.testFailed( reportEntry );
+                    }
+                    else
+                    {
+                        runListener.testError( reportEntry );
+                    }
+                    break;
+                default:
+                    reportEntry = createReportEntry( testIdentifier );
+                    if ( isTest )
+                    {
+                        runListener.testSucceeded( reportEntry );
+                    }
+                    else
+                    {
+                        runListener.testSetCompleted( reportEntry );
+                    }
+            }
         }
     }
 
     @Override
     public void executionSkipped( TestIdentifier testIdentifier, String reason )
     {
-        ensureTestSetStarted( testIdentifier );
-        String source = getLegacyReportingClassName( testIdentifier );
-        runListener.testSkipped( ignored( source, getLegacyReportingName( testIdentifier ), reason ) );
-        completeTestSetIfNecessary( testIdentifier );
-    }
-
-    @Override
-    public void executionFinished(
-                    TestIdentifier testIdentifier, TestExecutionResult testExecutionResult )
-    {
-        if ( testExecutionResult.getStatus() == ABORTED )
-        {
-            runListener.testAssumptionFailure( createReportEntry( testIdentifier, testExecutionResult ) );
-        }
-        else if ( testExecutionResult.getStatus() == FAILED )
-        {
-            reportFailedTest( testIdentifier, testExecutionResult );
-        }
-        else if ( testIdentifier.isTest() )
-        {
-            runListener.testSucceeded( createReportEntry( testIdentifier ) );
-        }
-        completeTestSetIfNecessary( testIdentifier );
-    }
-
-    private void updateTestPlan( TestPlan testPlan )
-    {
-        this.testPlan = testPlan;
-        testSetNodes.clear();
-    }
-
-    private void ensureTestSetStarted( TestIdentifier testIdentifier )
-    {
-        if ( isTestSetStarted( testIdentifier ) )
-        {
-            return;
-        }
-        if ( testIdentifier.isTest() )
-        {
-            startTestSet( testPlan.getParent( testIdentifier ).orElse( testIdentifier ) );
-        }
-        else
-        {
-            startTestSet( testIdentifier );
-        }
-    }
-
-    private boolean isTestSetStarted( TestIdentifier testIdentifier )
-    {
-        return testSetNodes.contains( testIdentifier )
-                        || testPlan.getParent( testIdentifier ).map( this::isTestSetStarted ).orElse( false );
-    }
-
-    private void startTestSetIfPossible( TestIdentifier testIdentifier )
-    {
-        if ( !isTestSetStarted( testIdentifier ) )
-        {
-            startTestSet( testIdentifier );
-        }
-    }
-
-    private void completeTestSetIfNecessary( TestIdentifier testIdentifier )
-    {
-        if ( testSetNodes.contains( testIdentifier ) )
-        {
-            completeTestSet( testIdentifier );
-        }
-    }
-
-    private void startTestSet( TestIdentifier testIdentifier )
-    {
-        runListener.testSetStarting( createTestSetReportEntry( testIdentifier ) );
-        testSetNodes.add( testIdentifier );
-    }
-
-    private void completeTestSet( TestIdentifier testIdentifier )
-    {
-        runListener.testSetCompleted( createTestSetReportEntry( testIdentifier ) );
-        testSetNodes.remove( testIdentifier );
-    }
-
-    private void reportFailedTest(
-                    TestIdentifier testIdentifier, TestExecutionResult testExecutionResult )
-    {
-        SimpleReportEntry reportEntry = createReportEntry( testIdentifier, testExecutionResult );
-        if ( testExecutionResult.getThrowable().filter( AssertionError.class::isInstance ).isPresent() )
-        {
-            runListener.testFailed( reportEntry );
-        }
-        else
-        {
-            runListener.testError( reportEntry );
-        }
+        String[] classMethodName = toClassMethodName( testIdentifier );
+        String className = classMethodName[0];
+        String methodName = classMethodName[1];
+        runListener.testSkipped( ignored( className, methodName, reason ) );
     }
 
     private SimpleReportEntry createTestSetReportEntry( TestIdentifier testIdentifier )
     {
-        return new SimpleReportEntry(
-                        JUnitPlatformProvider.class.getName(), testIdentifier.getLegacyReportingName() );
+        String[] classMethodName = toClassMethodName( testIdentifier );
+        String className = classMethodName[0];
+        String methodName = classMethodName[1];
+        return new SimpleReportEntry( className, methodName );
     }
 
     private SimpleReportEntry createReportEntry( TestIdentifier testIdentifier )
@@ -194,79 +153,88 @@ final class RunListenerAdapter
         return createReportEntry( testIdentifier, (StackTraceWriter) null );
     }
 
-    private SimpleReportEntry createReportEntry(
-                    TestIdentifier testIdentifier, TestExecutionResult testExecutionResult )
+    private SimpleReportEntry createReportEntry( TestIdentifier testIdentifier,
+                                                 TestExecutionResult testExecutionResult )
     {
-        return createReportEntry(
-                        testIdentifier, getStackTraceWriter( testIdentifier, testExecutionResult ) );
+        return createReportEntry( testIdentifier, toStackTraceWriter( testIdentifier, testExecutionResult ) );
     }
 
-    private SimpleReportEntry createReportEntry(
-                    TestIdentifier testIdentifier, StackTraceWriter stackTraceWriter )
+    private SimpleReportEntry createReportEntry( TestIdentifier testIdentifier, StackTraceWriter stackTraceWriter )
     {
-        String source = getLegacyReportingClassName( testIdentifier );
-        String name = getLegacyReportingName( testIdentifier );
-
-        return SimpleReportEntry.withException( source, name, stackTraceWriter );
+        String[] classMethodName = toClassMethodName( testIdentifier );
+        String className = classMethodName[0];
+        String methodName = classMethodName[1];
+        return withException( className, methodName, stackTraceWriter );
     }
 
-    private String getLegacyReportingName( TestIdentifier testIdentifier )
+    private StackTraceWriter toStackTraceWriter( TestIdentifier testIdentifier,
+                                                 TestExecutionResult testExecutionResult )
     {
-        // Surefire cuts off the name at the first '(' character. Thus, we have to pick a different
-        // character to represent parentheses. "()" are removed entirely to maximize compatibility with
-        // existing reporting tools because in the old days test methods used to not have parameters.
-        return testIdentifier
-                        .getLegacyReportingName()
-                        .replace( "()", "" )
-                        .replace( '(', '{' )
-                        .replace( ')', '}' );
-    }
-
-    private String getLegacyReportingClassName( TestIdentifier testIdentifier )
-    {
-        return LegacyReportingUtils.getClassName( testPlan, testIdentifier );
-    }
-
-    private StackTraceWriter getStackTraceWriter(
-                    TestIdentifier testIdentifier, TestExecutionResult testExecutionResult )
-    {
-        Optional<Throwable> throwable = testExecutionResult.getThrowable();
-        if ( testExecutionResult.getStatus() == FAILED )
+        switch ( testExecutionResult.getStatus() )
         {
-            // Failed tests must have a StackTraceWriter, otherwise Surefire will fail
-            return getStackTraceWriter( testIdentifier, throwable.orElse( null ) );
+            case ABORTED:
+            case FAILED:
+                // Failed tests must have a StackTraceWriter, otherwise Surefire will fail
+                return toStackTraceWriter( testIdentifier, testExecutionResult.getThrowable().orElse( null ) );
+            default:
+                return testExecutionResult.getThrowable().map( t -> toStackTraceWriter( testIdentifier, t ) )
+                        .orElse( null );
         }
-        return throwable.map( t -> getStackTraceWriter( testIdentifier, t ) ).orElse( null );
     }
 
-    private StackTraceWriter getStackTraceWriter( TestIdentifier testIdentifier, Throwable throwable )
+    private StackTraceWriter toStackTraceWriter( TestIdentifier testIdentifier, Throwable throwable )
     {
-        String className = getClassName( testIdentifier );
-        String methodName = getMethodName( testIdentifier ).orElse( "" );
+        String[] classMethodName = toClassMethodName( testIdentifier );
+        String className = classMethodName[0];
+        String methodName = classMethodName[1];
         return new PojoStackTraceWriter( className, methodName, throwable );
     }
 
-    private String getClassName( TestIdentifier testIdentifier )
+    /**
+     * <ul>
+     *     <li>[0] class name - used in stacktrace parser</li>
+     *     <li>[1] class display name</li>
+     *     <li>[2] method signature - used in stacktrace parser</li>
+     *     <li>[3] method display name</li>
+     * </ul>
+     *
+     * @param testIdentifier a class or method
+     * @return 4 elements string array
+     */
+    private String[] toClassMethodName( TestIdentifier testIdentifier )
     {
-        TestSource testSource = testIdentifier.getSource().orElse( null );
-        if ( testSource instanceof ClassSource )
-        {
-            return ( (ClassSource) testSource ).getJavaClass().getName();
-        }
-        if ( testSource instanceof MethodSource )
-        {
-            return ( (MethodSource) testSource ).getClassName();
-        }
-        return testPlan.getParent( testIdentifier ).map( this::getClassName ).orElse( "" );
-    }
+        Optional<TestSource> testSource = testIdentifier.getSource();
+        String display = testIdentifier.getDisplayName();
 
-    private Optional<String> getMethodName( TestIdentifier testIdentifier )
-    {
-        TestSource testSource = testIdentifier.getSource().orElse( null );
-        if ( testSource instanceof MethodSource )
+        if ( testSource.filter( MethodSource.class::isInstance ).isPresent() )
         {
-            return Optional.of( ( (MethodSource) testSource ).getMethodName() );
+            MethodSource methodSource = testSource.map( MethodSource.class::cast ).get();
+
+            String source = testPlan.getParent( testIdentifier )
+                    .map( this::toClassMethodName )
+                    .map( s -> s[0] )
+                    .orElse( methodSource.getClassName() );
+
+            String method = methodSource.getMethodName();
+            boolean useMethod = display.equals( method ) || display.equals( method + "()" );
+            String name = useMethod ? method : display;
+
+            return new String[] { source, name };
         }
-        return Optional.empty();
+        else if ( testSource.filter( ClassSource.class::isInstance ).isPresent() )
+        {
+            ClassSource classSource = testSource.map( ClassSource.class::cast ).get();
+            String className = classSource.getClassName();
+            String simpleClassName = className.substring( 1 + className.lastIndexOf( '.' ) );
+            String source = display.equals( simpleClassName ) ? className : display;
+            return new String[] { source, source };
+        }
+        else
+        {
+            String source = testPlan.getParent( testIdentifier )
+                    .map( TestIdentifier::getDisplayName )
+                    .orElse( display );
+            return new String[] { source, display };
+        }
     }
 }

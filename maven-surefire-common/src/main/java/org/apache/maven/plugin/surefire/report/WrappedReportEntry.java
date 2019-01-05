@@ -74,6 +74,12 @@ public class WrappedReportEntry
         return elapsed;
     }
 
+    @Override
+    public int getElapsed( int fallback )
+    {
+        return elapsed == null ? fallback : elapsed;
+    }
+
     public ReportEntryType getReportEntryType()
     {
         return reportEntryType;
@@ -137,8 +143,7 @@ public class WrappedReportEntry
 
     public String getReportName()
     {
-        final int i = getName().lastIndexOf( "(" );
-        return i > 0 ? getName().substring( 0, i ) : getName();
+        return getName();
     }
 
     public String getReportName( String suffix )

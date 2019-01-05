@@ -22,15 +22,18 @@ package org.apache.maven.surefire.junitplatform;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.singleton;
 import static java.util.Collections.singletonList;
+import static org.fest.assertions.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.platform.engine.TestDescriptor.Type.CONTAINER;
 import static org.junit.platform.engine.TestDescriptor.Type.TEST;
+import static org.junit.platform.engine.TestExecutionResult.aborted;
+import static org.junit.platform.engine.TestExecutionResult.failed;
 import static org.junit.platform.engine.TestExecutionResult.successful;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.inOrder;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -38,11 +41,15 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.verifyZeroInteractions;
 import static org.mockito.Mockito.when;
 
+import java.lang.reflect.Method;
 import java.util.Optional;
 
+import org.apache.maven.surefire.report.PojoStackTraceWriter;
 import org.apache.maven.surefire.report.ReportEntry;
 import org.apache.maven.surefire.report.RunListener;
 import org.apache.maven.surefire.report.SimpleReportEntry;
+import org.apache.maven.surefire.report.StackTraceWriter;
+import org.apache.maven.surefire.report.TestSetReportEntry;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.jupiter.api.DisplayName;
@@ -51,16 +58,16 @@ import org.junit.jupiter.engine.descriptor.TestMethodTestDescriptor;
 import org.junit.platform.engine.ConfigurationParameters;
 import org.junit.platform.engine.TestDescriptor;
 import org.junit.platform.engine.TestDescriptor.Type;
-import org.junit.platform.engine.TestExecutionResult;
 import org.junit.platform.engine.TestSource;
 import org.junit.platform.engine.UniqueId;
 import org.junit.platform.engine.support.descriptor.AbstractTestDescriptor;
 import org.junit.platform.engine.support.descriptor.ClassSource;
 import org.junit.platform.engine.support.descriptor.EngineDescriptor;
+import org.junit.platform.engine.support.descriptor.MethodSource;
 import org.junit.platform.launcher.TestIdentifier;
 import org.junit.platform.launcher.TestPlan;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InOrder;
+import org.opentest4j.TestSkippedException;
 
 /**
  * Unit tests for {@link RunListenerAdapter}.
@@ -69,7 +76,7 @@ import org.mockito.InOrder;
  */
 public class RunListenerAdapterTest
 {
-    private static final ConfigurationParameters CONFIG_PARAMS = mock(ConfigurationParameters.class);
+    private static final ConfigurationParameters CONFIG_PARAMS = mock( ConfigurationParameters.class );
 
     private RunListener listener;
 
@@ -120,7 +127,7 @@ public class RunListenerAdapterTest
         verify( listener ).testStarting( entryCaptor.capture() );
 
         ReportEntry entry = entryCaptor.getValue();
-        assertEquals( MY_TEST_METHOD_NAME + "{String}", entry.getName() );
+        assertEquals( MY_TEST_METHOD_NAME + "(String)", entry.getName() );
         assertEquals( MyTestClass.class.getName(), entry.getSourceName() );
         assertNull( entry.getStackTraceWriter() );
     }
@@ -139,7 +146,7 @@ public class RunListenerAdapterTest
         adapter.testPlanExecutionStarted( plan );
         adapter.executionStarted( TestIdentifier.from( engine ) );
         adapter.executionStarted( TestIdentifier.from( parent ) );
-        verify( listener ).testSetStarting( new SimpleReportEntry( JUnitPlatformProvider.class.getName(),
+        verify( listener ).testSetStarting( new SimpleReportEntry( MyTestClass.class.getName(),
                                                         MyTestClass.class.getName() ) );
         verifyNoMoreInteractions( listener );
 
@@ -152,7 +159,7 @@ public class RunListenerAdapterTest
         verifyNoMoreInteractions( listener );
 
         adapter.executionFinished( TestIdentifier.from( parent ), successful() );
-        verify( listener ).testSetCompleted( new SimpleReportEntry( JUnitPlatformProvider.class.getName(),
+        verify( listener ).testSetCompleted( new SimpleReportEntry( MyTestClass.class.getName(),
                                                         MyTestClass.class.getName() ) );
         verifyNoMoreInteractions( listener );
 
@@ -161,11 +168,10 @@ public class RunListenerAdapterTest
     }
 
     @Test
-    public void notifiedLazilyForTestSetWhenFirstTestWithoutClassDescriptorParentStarted()
+    public void displayNamesInClassAndMethods()
     {
         EngineDescriptor engine = newEngineDescriptor();
-        TestDescriptor parent = newTestDescriptor( engine.getUniqueId().append( "container", "noClass" ), "parent",
-                                        CONTAINER );
+        TestDescriptor parent = newClassDescriptor( "parent" );
         engine.addChild( parent );
         TestDescriptor child1 = newTestDescriptor( parent.getUniqueId().append( "test", "child1" ), "child1", TEST );
         parent.addChild( child1 );
@@ -176,14 +182,12 @@ public class RunListenerAdapterTest
         adapter.testPlanExecutionStarted( plan );
         adapter.executionStarted( TestIdentifier.from( engine ) );
         adapter.executionStarted( TestIdentifier.from( parent ) );
+        verify( listener ).testSetStarting( new SimpleReportEntry( "parent", "parent" ) );
         verifyZeroInteractions( listener );
 
         adapter.executionStarted( TestIdentifier.from( child1 ) );
-        InOrder inOrder = inOrder( listener );
-        inOrder.verify( listener )
-                .testSetStarting( new SimpleReportEntry( JUnitPlatformProvider.class.getName(), "parent" ) );
-        inOrder.verify( listener ).testStarting( new SimpleReportEntry( "parent", "child1" ) );
-        inOrder.verifyNoMoreInteractions();
+        verify( listener ).testStarting( new SimpleReportEntry( "parent", "child1" ) );
+        verifyNoMoreInteractions( listener );
 
         adapter.executionFinished( TestIdentifier.from( child1 ), successful() );
         verify( listener ).testSucceeded( new SimpleReportEntry( "parent", "child1" ) );
@@ -198,8 +202,7 @@ public class RunListenerAdapterTest
         verifyNoMoreInteractions( listener );
 
         adapter.executionFinished( TestIdentifier.from( parent ), successful() );
-        verify( listener )
-                        .testSetCompleted( new SimpleReportEntry( JUnitPlatformProvider.class.getName(), "parent" ) );
+        verify( listener ).testSetCompleted( new SimpleReportEntry( "parent", "parent" ) );
         verifyNoMoreInteractions( listener );
 
         adapter.executionFinished( TestIdentifier.from( engine ), successful() );
@@ -207,7 +210,7 @@ public class RunListenerAdapterTest
     }
 
     @Test
-    public void notifiedForTestSetForSingleNodeEngine()
+    public void notifiedForUnclassifiedTestIdentifier()
     {
         EngineDescriptor engine = new EngineDescriptor( UniqueId.forEngine( "engine" ), "engine" )
         {
@@ -221,18 +224,12 @@ public class RunListenerAdapterTest
 
         adapter.testPlanExecutionStarted( plan );
         adapter.executionStarted( TestIdentifier.from( engine ) );
-        InOrder inOrder = inOrder( listener );
-        inOrder.verify( listener )
-                .testSetStarting( new SimpleReportEntry( JUnitPlatformProvider.class.getName(), "engine" ) );
-        inOrder.verify( listener ).testStarting( new SimpleReportEntry( "<unrooted>", "engine" ) );
-        inOrder.verifyNoMoreInteractions();
+        verify( listener ).testStarting( new SimpleReportEntry( "engine", "engine" ) );
+        verifyNoMoreInteractions( listener );
 
         adapter.executionFinished( TestIdentifier.from( engine ), successful() );
-        inOrder = inOrder( listener );
-        inOrder.verify( listener ).testSucceeded( new SimpleReportEntry( "<unrooted>", "engine" ) );
-        inOrder.verify( listener )
-                .testSetCompleted( new SimpleReportEntry( JUnitPlatformProvider.class.getName(), "engine" ) );
-        inOrder.verifyNoMoreInteractions();
+        verify( listener ).testSucceeded( new SimpleReportEntry( "engine", "engine" ) );
+        verifyNoMoreInteractions( listener );
     }
 
     @Test
@@ -279,48 +276,54 @@ public class RunListenerAdapterTest
     public void notifiedWhenMethodExecutionAborted()
                     throws Exception
     {
-        adapter.executionFinished( newMethodIdentifier(), TestExecutionResult.aborted( null ) );
+        adapter.executionFinished( newMethodIdentifier(), aborted( null ) );
         verify( listener ).testAssumptionFailure( any() );
     }
 
     @Test
     public void notifiedWhenClassExecutionAborted()
     {
-        adapter.executionFinished( newClassIdentifier(), TestExecutionResult.aborted( null ) );
-        verify( listener ).testAssumptionFailure( any() );
+        TestSkippedException t = new TestSkippedException( "skipped" );
+        adapter.executionFinished( newClassIdentifier(), aborted( t ) );
+        String name = MyTestClass.class.getName();
+        StackTraceWriter stw = new PojoStackTraceWriter( name, name, t );
+        verify( listener ).testSetCompleted( eq( new SimpleReportEntry( name, name, stw, null ) ) );
     }
 
     @Test
-    public void notifiedWhenMethodExecutionFailedWithAnAssertionError()
+    public void notifiedWhenMethodExecutionFailed()
                     throws Exception
     {
-        adapter.executionFinished( newMethodIdentifier(), TestExecutionResult.failed( new AssertionError() ) );
+        adapter.executionFinished( newMethodIdentifier(), failed( new AssertionError() ) );
         verify( listener ).testFailed( any() );
     }
 
     @Test
-    public void notifiedWhenMethodExecutionFailedWithANonAssertionError()
+    public void notifiedWhenMethodExecutionFailedWithError()
                     throws Exception
     {
-        adapter.executionFinished( newMethodIdentifier(), TestExecutionResult.failed( new RuntimeException() ) );
+        adapter.executionFinished( newMethodIdentifier(), failed( new RuntimeException() ) );
         verify( listener ).testError( any() );
     }
 
     @Test
     public void notifiedWithCorrectNamesWhenClassExecutionFailed()
     {
-        ArgumentCaptor<ReportEntry> entryCaptor = ArgumentCaptor.forClass( ReportEntry.class );
+        ArgumentCaptor<TestSetReportEntry> entryCaptor = ArgumentCaptor.forClass( TestSetReportEntry.class );
         TestPlan testPlan = TestPlan.from( singletonList( new EngineDescriptor( newId(), "Luke's Plan" ) ) );
         adapter.testPlanExecutionStarted( testPlan );
 
-        adapter.executionFinished(
-                        identifiersAsParentOnTestPlan( testPlan, newEngineDescriptor(), newClassDescriptor() ),
-                        TestExecutionResult.failed( new AssertionError() ) );
-        verify( listener ).testFailed( entryCaptor.capture() );
+        adapter.executionFinished( identifiersAsParentOnTestPlan( testPlan, newClassDescriptor() ),
+                failed( new AssertionError() ) );
+        verify( listener ).testSetCompleted( entryCaptor.capture() );
 
         ReportEntry entry = entryCaptor.getValue();
         assertEquals( MyTestClass.class.getTypeName(), entry.getSourceName() );
+        assertEquals( MyTestClass.class.getTypeName(), entry.getName() );
         assertNotNull( entry.getStackTraceWriter() );
+        assertNotNull( entry.getStackTraceWriter().getThrowable() );
+        assertThat( entry.getStackTraceWriter().getThrowable().getTarget() )
+                .isInstanceOf( AssertionError.class );
     }
 
     @Test
@@ -342,7 +345,7 @@ public class RunListenerAdapterTest
 
         adapter.executionFinished( TestIdentifier.from( classDescriptor ), successful() );
 
-        verify( listener ).testSetCompleted( new SimpleReportEntry( JUnitPlatformProvider.class.getName(),
+        verify( listener ).testSetCompleted( new SimpleReportEntry( MyTestClass.class.getName(),
                 MyTestClass.class.getName() ) );
 
         verify( listener, never() ).testSucceeded( any() );
@@ -375,7 +378,7 @@ public class RunListenerAdapterTest
 
         TestIdentifier child =
                 newSourcelessChildIdentifierWithParent( plan, "Parent", ClassSource.from( MyTestClass.class ) );
-        adapter.executionFinished( child, TestExecutionResult.failed( new RuntimeException() ) );
+        adapter.executionFinished( child, failed( new RuntimeException() ) );
         ArgumentCaptor<ReportEntry> entryCaptor = ArgumentCaptor.forClass( ReportEntry.class );
         verify( listener ).testError( entryCaptor.capture() );
         assertNotNull( entryCaptor.getValue().getStackTraceWriter() );
@@ -388,7 +391,7 @@ public class RunListenerAdapterTest
         adapter.testPlanExecutionStarted( plan );
 
         TestIdentifier child = newSourcelessChildIdentifierWithParent( plan, "Parent", null );
-        adapter.executionFinished( child, TestExecutionResult.failed( new RuntimeException( "message" ) ) );
+        adapter.executionFinished( child, failed( new RuntimeException( "message" ) ) );
         ArgumentCaptor<ReportEntry> entryCaptor = ArgumentCaptor.forClass( ReportEntry.class );
         verify( listener ).testError( entryCaptor.capture() );
         assertNotNull( entryCaptor.getValue().getStackTraceWriter() );
@@ -401,7 +404,7 @@ public class RunListenerAdapterTest
     public void stackTraceWriterPresentEvenWithoutException()
                     throws Exception
     {
-        adapter.executionFinished( newMethodIdentifier(), TestExecutionResult.failed( null ) );
+        adapter.executionFinished( newMethodIdentifier(), failed( null ) );
         ArgumentCaptor<ReportEntry> entryCaptor = ArgumentCaptor.forClass( ReportEntry.class );
         verify( listener ).testError( entryCaptor.capture() );
         assertNotNull( entryCaptor.getValue().getStackTraceWriter() );
@@ -411,8 +414,22 @@ public class RunListenerAdapterTest
     public void displayNamesIgnoredInReport()
                     throws NoSuchMethodException
     {
-        TestMethodTestDescriptor descriptor = new TestMethodTestDescriptor( newId(), MyTestClass.class,
-                MyTestClass.class.getDeclaredMethod( "myNamedTestMethod" ) );
+        class TestMethodTestDescriptorWithDisplayName extends AbstractTestDescriptor
+        {
+            private TestMethodTestDescriptorWithDisplayName( UniqueId uniqueId, Class<?> testClass, Method testMethod )
+            {
+                super( uniqueId, "some display name", MethodSource.from( testClass, testMethod ) );
+            }
+
+            @Override
+            public Type getType()
+            {
+                return Type.TEST;
+            }
+        }
+
+        TestMethodTestDescriptorWithDisplayName descriptor = new TestMethodTestDescriptorWithDisplayName( newId(),
+                MyTestClass.class, MyTestClass.class.getDeclaredMethod( "myNamedTestMethod" ) );
 
         TestIdentifier factoryIdentifier = TestIdentifier.from( descriptor );
         ArgumentCaptor<ReportEntry> entryCaptor = ArgumentCaptor.forClass( ReportEntry.class );
@@ -422,7 +439,7 @@ public class RunListenerAdapterTest
 
         ReportEntry value = entryCaptor.getValue();
 
-        assertEquals( "myNamedTestMethod", value.getName() );
+        assertEquals( "some display name", value.getName() );
     }
 
     private static TestIdentifier newMethodIdentifier()
@@ -443,6 +460,12 @@ public class RunListenerAdapterTest
     private static TestIdentifier newClassIdentifier()
     {
         return TestIdentifier.from( newClassDescriptor() );
+    }
+
+    private static TestDescriptor newClassDescriptor( String displayName )
+    {
+        return new ClassTestDescriptor( UniqueId.root( "class", MyTestClass.class.getName() ),
+                c -> displayName, MyTestClass.class, CONFIG_PARAMS ) {};
     }
 
     private static TestDescriptor newClassDescriptor()
@@ -514,6 +537,13 @@ public class RunListenerAdapterTest
         plan.add( childIdentifier );
 
         return childIdentifier;
+    }
+
+    private static TestIdentifier identifiersAsParentOnTestPlan( TestPlan plan, TestDescriptor root )
+    {
+        TestIdentifier rootIdentifier = TestIdentifier.from( root );
+        plan.add( rootIdentifier );
+        return rootIdentifier;
     }
 
     private static UniqueId newId()

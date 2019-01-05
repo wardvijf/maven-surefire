@@ -167,25 +167,25 @@ public class JUnitPlatformProviderTest
                         .verify( runListener )
                         .testSetStarting(
                                         new SimpleReportEntry(
-                                                        JUnitPlatformProvider.class.getName(),
+                                                TestClass1.class.getName(),
                                                         TestClass1.class.getName() ) );
         inOrder
                         .verify( runListener )
                         .testSetCompleted(
                                         new SimpleReportEntry(
-                                                        JUnitPlatformProvider.class.getName(),
+                                                TestClass1.class.getName(),
                                                         TestClass1.class.getName() ) );
         inOrder
                         .verify( runListener )
                         .testSetStarting(
                                         new SimpleReportEntry(
-                                                        JUnitPlatformProvider.class.getName(),
+                                                TestClass2.class.getName(),
                                                         TestClass2.class.getName() ) );
         inOrder
                         .verify( runListener )
                         .testSetCompleted(
                                         new SimpleReportEntry(
-                                                        JUnitPlatformProvider.class.getName(),
+                                                TestClass2.class.getName(),
                                                         TestClass2.class.getName() ) );
 
         assertThat( executionListener.summaries ).hasSize( 1 );
